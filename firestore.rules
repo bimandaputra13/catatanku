@@ -1,0 +1,114 @@
+rules_version = '2';
+
+// =============================================================================
+//  Catatku — Firestore Security Rules
+//  Prinsip: setiap pengguna HANYA bisa membaca/menulis datanya sendiri
+//  (users/{uid}/...), dan setiap dokumen divalidasi bentuk & ukurannya.
+//  Semua path lain otomatis ditolak.
+// =============================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function noteKeys() {
+      return ['title', 'content', 'tags', 'color', 'pinned', 'locked', 'lock', 'enc',
+              'fileCount', 'fileNames', 'createdAt', 'updatedAt'];
+    }
+
+    function validLockState(d) {
+      return (d.locked == false && d.lock == null && d.enc == null)
+        || (d.locked == true
+            && d.content == ''
+            && d.lock is map
+            && d.lock.keys().hasOnly(['v', 'salt', 'iter', 'iv', 'w'])
+            && d.lock.salt is string && d.lock.iv is string && d.lock.w is string
+            && d.lock.iter is int && d.lock.iter >= 100000
+            && d.enc is map
+            && d.enc.keys().hasOnly(['iv', 'd'])
+            && d.enc.iv is string
+            && d.enc.d is string && d.enc.d.size() <= 950000);
+    }
+
+    function validNote(d) {
+      return d.keys().hasOnly(noteKeys())
+        && d.keys().hasAll(noteKeys())
+        && d.title is string && d.title.size() <= 200
+        && d.content is string && d.content.size() <= 700000
+        && d.tags is list && d.tags.size() <= 20
+        && d.color in ['default', 'red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink']
+        && d.pinned is bool
+        && d.locked is bool
+        && d.fileCount is int && d.fileCount >= 0 && d.fileCount <= 500
+        && d.fileNames is list && d.fileNames.size() <= 100
+        && d.updatedAt == request.time
+        && validLockState(d);
+    }
+
+    function validFile(d) {
+      return d.keys().hasOnly(['name', 'type', 'enc', 'iv', 'm', 'size', 'chunks', 'status', 'createdAt'])
+        && d.name is string && d.name.size() <= 255
+        && d.type is string && d.type.size() <= 120
+        && d.enc is bool
+        && d.iv is string && d.iv.size() <= 32
+        && (d.m == null || (d.m is map && d.m.keys().hasOnly(['iv', 'd']) && d.m.d is string && d.m.d.size() <= 2000))
+        && d.size is int && d.size > 0 && d.size <= 10485760
+        && d.chunks is int && d.chunks >= 1 && d.chunks <= 16
+        && d.status in ['uploading', 'ready']
+        && d.createdAt is timestamp;
+    }
+
+    match /users/{uid} {
+
+      // ---------------- Catatan ----------------
+      match /notes/{noteId} {
+        allow read, delete: if isOwner(uid);
+        allow create: if isOwner(uid)
+          && noteId.size() <= 40
+          && validNote(request.resource.data)
+          && request.resource.data.createdAt == request.time;
+        allow update: if isOwner(uid)
+          && validNote(request.resource.data)
+          && request.resource.data.createdAt == resource.data.createdAt;
+
+        // ---------------- Lampiran (metadata) ----------------
+        match /files/{fileId} {
+          allow read, delete: if isOwner(uid);
+          allow create: if isOwner(uid)
+            && validFile(request.resource.data)
+            && request.resource.data.status == 'uploading'
+            && request.resource.data.createdAt == request.time;
+          allow update: if isOwner(uid)
+            && validFile(request.resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+
+          // ---------------- Lampiran (potongan data biner) ----------------
+          match /chunks/{chunkId} {
+            allow read, delete: if isOwner(uid);
+            allow create: if isOwner(uid)
+              && request.resource.data.keys().hasOnly(['i', 'd'])
+              && request.resource.data.i is int
+              && request.resource.data.i >= 0 && request.resource.data.i < 16
+              && chunkId == string(request.resource.data.i)
+              && request.resource.data.d is bytes
+              && request.resource.data.d.size() <= 921600;
+          }
+        }
+      }
+
+      // ---------------- Live Pad ----------------
+      match /live/{padId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && padId == 'pad'
+          && request.resource.data.keys().hasOnly(['text', 'device', 'session', 'updatedAt'])
+          && request.resource.data.text is string && request.resource.data.text.size() <= 200000
+          && request.resource.data.device is string && request.resource.data.device.size() <= 80
+          && request.resource.data.session is string && request.resource.data.session.size() <= 64
+          && request.resource.data.updatedAt == request.time;
+      }
+    }
+  }
+}
