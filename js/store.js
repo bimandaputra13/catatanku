@@ -332,9 +332,18 @@ export const watchItems = (id, cb, onErr) =>
   onSnapshot(query(itemsCol(id), orderBy("createdAt", "desc"), limit(ROOM_LIMITS.feed)),
     (s) => cb(s.docs.map((d) => ({ id: d.id, pending: d.metadata.hasPendingWrites, ...d.data({ serverTimestamps: "estimate" }) }))), onErr);
 
-export function sendItem(roomId, text, displayName) {
-  if (text.length > ROOM_LIMITS.text) throw new Error(`Maksimal ${ROOM_LIMITS.text.toLocaleString("id-ID")} karakter per kiriman.`);
-  return setDoc(doc(itemsCol(roomId)), { text, uid, name: cleanName(displayName), createdAt: serverTimestamp() });
+/**
+ * Kirim ke feed room. Untuk pesan terenkripsi: text = "" dan enc = hasil encryptWithPassword,
+ * plus hint (petunjuk password, opsional, terlihat semua anggota).
+ * Mengembalikan { id, done } — id tersedia langsung, done selesai saat server mengonfirmasi.
+ */
+export function sendItem(roomId, text, displayName, { enc = null, hint = "" } = {}) {
+  if (!enc && text.length > ROOM_LIMITS.text) throw new Error(`Maksimal ${ROOM_LIMITS.text.toLocaleString("id-ID")} karakter per kiriman.`);
+  const ref = doc(itemsCol(roomId));
+  const data = enc
+    ? { text: "", enc, hint: String(hint || "").slice(0, 100), uid, name: cleanName(displayName), createdAt: serverTimestamp() }
+    : { text, uid, name: cleanName(displayName), createdAt: serverTimestamp() };
+  return { id: ref.id, done: setDoc(ref, data) };
 }
 export const deleteItem = (roomId, itemId) => deleteDoc(doc(itemsCol(roomId), itemId));
 

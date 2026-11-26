@@ -1,7 +1,8 @@
 // Isi room bersama: feed kiriman teks realtime antar akun, undangan, anggota.
 import {
-  html, setHTML, icon, $, $$, toast, confirmDialog, openModal, timeAgo, toMillis, copyText, autoGrow
+  html, setHTML, icon, $, $$, toast, confirmDialog, openModal, passwordDialog, timeAgo, toMillis, copyText, autoGrow
 } from "../ui.js";
+import { encryptWithPassword, decryptWithPassword } from "../crypto.js";
 import { liveTabs } from "./rooms.js";
 
 const COLLAPSE_LINES = 12;
@@ -66,7 +67,16 @@ export function mount(root, { store, go, id: roomId, fb }) {
 
     <form class="composer" id="r-form" novalidate>
       <textarea id="r-text" rows="3" placeholder="Tulis atau tempel teks untuk dibagikan ke semua anggota…" maxlength="${store.ROOM_LIMITS.text}" aria-label="Teks untuk dikirim"></textarea>
+      <div class="enc-row" id="r-enc" hidden>
+        <div class="enc-note">${icon("shield")} <span>Pesan dienkripsi di perangkat Anda. Hanya yang tahu password bisa membukanya. Sampaikan password lewat jalur lain.</span></div>
+        <div class="enc-fields">
+          <div class="pw-wrap"><input type="password" id="r-pw" placeholder="Password pesan (min. 6)" autocomplete="new-password" aria-label="Password pesan">
+            <button type="button" class="icon-btn sm" id="r-pw-eye" aria-label="Tampilkan password">${icon("eye")}</button></div>
+          <input id="r-hint" maxlength="100" placeholder="Petunjuk (opsional, terlihat semua)" autocomplete="off" aria-label="Petunjuk password">
+        </div>
+      </div>
       <div class="composer-bar">
+        <button type="button" class="btn btn-ghost btn-sm" id="r-lock" aria-pressed="false" title="Kirim sebagai pesan terenkripsi">${icon("lock")} <span>Enkripsi</span></button>
         <small class="muted only-desktop">Ctrl + Enter untuk kirim</small>
         <span class="spacer"></span>
         <button type="button" class="btn btn-ghost btn-sm" id="r-paste">${icon("paste")} Tempel &amp; kirim</button>
@@ -83,6 +93,25 @@ export function mount(root, { store, go, id: roomId, fb }) {
   const ta = $("#r-text", root);
   const menu = $("#r-menu", root);
   const isOwner = () => room && room.ownerId === me;
+
+  // Pesan terenkripsi: teks hasil dekripsi hanya disimpan di memori halaman ini
+  const decrypted = new Map(); // itemId -> plaintext
+  let encMode = false;
+  const encRow = $("#r-enc", root);
+  const lockBtn = $("#r-lock", root);
+  const pwInput = $("#r-pw", root);
+  const hintInput = $("#r-hint", root);
+  const setEncMode = (on) => {
+    encMode = on;
+    encRow.hidden = !on;
+    lockBtn.classList.toggle("on", on);
+    lockBtn.setAttribute("aria-pressed", String(on));
+    form.classList.toggle("encrypting", on);
+    ta.placeholder = on ? "Tulis pesan rahasia… (akan dienkripsi sebelum dikirim)" : "Tulis atau tempel teks untuk dibagikan ke semua anggota…";
+    if (on) setTimeout(() => (pwInput.value ? ta : pwInput).focus(), 30);
+  };
+  lockBtn.onclick = () => setEncMode(!encMode);
+  $("#r-pw-eye", root).onclick = () => { pwInput.type = pwInput.type === "password" ? "text" : "password"; };
 
   // Tombol suara (disimpan per perangkat)
   let soundOn = (() => { try { return localStorage.getItem(SOUND_KEY) !== "off"; } catch { return true; } })();
@@ -166,21 +195,36 @@ export function mount(root, { store, go, id: roomId, fb }) {
     if (fresh.size && soundOn) playNotif(); // satu bunyi walau beberapa pesan datang bersamaan
     setHTML(feed, html`${items.map((it) => {
       const mine = it.uid === me;
-      const long = it.text.split("\n").length > COLLAPSE_LINES || it.text.length > 900;
+      const isEnc = !!it.enc;
+      const plain = isEnc ? decrypted.get(it.id) : it.text;
+      const locked = isEnc && plain == null;
+      const text = plain || "";
+      const long = !locked && (text.split("\n").length > COLLAPSE_LINES || text.length > 900);
       const open = expanded.has(it.id);
-      return html`<article class="feed-item ${mine ? "mine" : ""} ${fresh.has(it.id) ? "fresh" : ""}" data-id="${it.id}">
+      const delBtn = mine || isOwner() ? html`<button class="icon-btn sm" data-act="del" title="Hapus" aria-label="Hapus kiriman">${icon("trash")}</button>` : "";
+      return html`<article class="feed-item ${mine ? "mine" : ""} ${isEnc ? "enc" : ""} ${fresh.has(it.id) ? "fresh" : ""}" data-id="${it.id}">
         <header>
           <span class="avatar sm" aria-hidden="true">${initials(it.name)}</span>
           <b>${it.name}${mine ? " (Anda)" : ""}</b>
           <span class="muted small" title="${new Date(toMillis(it.createdAt)).toLocaleString("id-ID")}">${it.pending ? "mengirim…" : timeAgo(toMillis(it.createdAt))}</span>
+          ${isEnc ? html`<span class="enc-badge" title="Pesan terenkripsi">${icon(locked ? "lock" : "unlock")} ${locked ? "Terenkripsi" : "Terbuka"}</span>` : ""}
         </header>
-        <div class="feed-text ${long && !open ? "collapsed" : ""}">${it.text}</div>
-        <footer>
-          ${long ? html`<button class="link small" data-act="toggle">${open ? "Ringkas" : "Tampilkan semua"}</button>` : ""}
-          <span class="spacer"></span>
-          ${mine || isOwner() ? html`<button class="icon-btn sm" data-act="del" title="Hapus" aria-label="Hapus kiriman">${icon("trash")}</button>` : ""}
-          <button class="btn btn-ghost btn-sm" data-act="copy">${icon("copy")} Salin</button>
-        </footer>
+        ${locked ? html`
+          <div class="enc-locked">
+            <p>${icon("lock")} Pesan ini terenkripsi. Masukkan password untuk membacanya.</p>
+            ${it.hint ? html`<p class="muted small">Petunjuk: <i>${it.hint}</i></p>` : ""}
+          </div>
+          <footer><span class="spacer"></span>${delBtn}
+            <button class="btn btn-primary btn-sm" data-act="decrypt">${icon("unlock")} Buka pesan</button></footer>`
+        : html`
+          <div class="feed-text ${long && !open ? "collapsed" : ""}">${text}</div>
+          <footer>
+            ${long ? html`<button class="link small" data-act="toggle">${open ? "Ringkas" : "Tampilkan semua"}</button>` : ""}
+            <span class="spacer"></span>
+            ${isEnc ? html`<button class="btn btn-ghost btn-sm" data-act="relock" title="Sembunyikan lagi">${icon("lock")} Kunci</button>` : ""}
+            ${delBtn}
+            <button class="btn btn-ghost btn-sm" data-act="copy">${icon("copy")} Salin</button>
+          </footer>`}
       </article>`;
     })}
     ${items.length >= store.ROOM_LIMITS.feed ? html`<p class="muted small center-text">Menampilkan ${store.ROOM_LIMITS.feed} kiriman terbaru.</p>` : ""}`);
@@ -194,7 +238,29 @@ export function mount(root, { store, go, id: roomId, fb }) {
     if (!it) return;
     const act = btn.dataset.act;
     if (act === "copy") {
-      (await copyText(it.text)) ? toast("Disalin ke clipboard.", "success", 1400) : toast("Gagal menyalin.", "error");
+      const text = it.enc ? decrypted.get(id) : it.text;
+      if (text == null) return;
+      (await copyText(text)) ? toast("Disalin ke clipboard.", "success", 1400) : toast("Gagal menyalin.", "error");
+    } else if (act === "decrypt") {
+      let attempts = 0;
+      const res = await passwordDialog({
+        title: "Buka pesan terenkripsi",
+        message: it.hint ? `Petunjuk dari ${it.name}: ${it.hint}` : `Minta password ke ${it.name} jika belum tahu.`,
+        mode: "unlock", okText: "Buka",
+        onSubmit: async ({ password }) => {
+          try { return await decryptWithPassword(password, it.enc); }
+          catch (err) {
+            // Jeda bertahap untuk memperlambat tebakan berulang
+            await new Promise((r) => setTimeout(r, Math.min(4000, 400 * ++attempts)));
+            throw new Error(err.code === "bad-password" ? "Password salah." : "Pesan tidak bisa didekripsi.");
+          }
+        },
+      });
+      if (res && alive) { decrypted.set(id, res.result); renderFeed(); }
+    } else if (act === "relock") {
+      decrypted.delete(id);
+      expanded.delete(id);
+      renderFeed();
     } else if (act === "toggle") {
       expanded.has(id) ? expanded.delete(id) : expanded.add(id);
       renderFeed();
@@ -206,23 +272,40 @@ export function mount(root, { store, go, id: roomId, fb }) {
   });
 
   // ------------------------------------------------------------ Kirim
+  let sending = false;
   async function send(text) {
     text = text.replace(/\s+$/, "");
     if (!text.trim()) { toast("Teks masih kosong."); return false; }
     if (text.length > store.ROOM_LIMITS.text) { toast(`Maksimal ${store.ROOM_LIMITS.text.toLocaleString("id-ID")} karakter per kiriman.`, "error"); return false; }
+    let opts = {};
+    if (encMode) {
+      const pw = pwInput.value;
+      const hint = hintInput.value.trim();
+      if (pw.length < 6) { toast("Password pesan minimal 6 karakter.", "error"); pwInput.focus(); return false; }
+      if (hint && hint.toLowerCase().includes(pw.toLowerCase())) { toast("Petunjuk tidak boleh berisi password.", "error"); hintInput.focus(); return false; }
+      opts = { enc: await encryptWithPassword(pw, text), hint };
+    }
     try {
       // Tidak menunggu konfirmasi server: kiriman langsung tampil ("mengirim…") lalu tersinkron.
-      store.sendItem(roomId, text, displayName()).catch((err) => {
+      const { id, done } = store.sendItem(roomId, text, displayName(), opts);
+      if (opts.enc) decrypted.set(id, text); // pengirim langsung bisa membaca pesannya sendiri
+      done.catch((err) => {
         console.error(err);
-        toast(err.code === "permission-denied" ? "Gagal mengirim: Anda bukan anggota room." : "Gagal mengirim.", "error");
+        toast(err.code === "permission-denied" ? "Gagal mengirim: ditolak rules (publish ulang firestore.rules?)." : "Gagal mengirim.", "error", 5000);
       });
+      if (opts.enc) toast("Pesan terenkripsi terkirim. Jangan lupa beri tahu password-nya.", "success", 3000);
       return true;
     } catch (err) { toast(err.message, "error"); return false; }
   }
 
   form.onsubmit = async (e) => {
     e.preventDefault();
-    if (await send(ta.value)) { ta.value = ""; autoGrow(ta, 84); ta.focus(); }
+    if (sending) return;
+    sending = true;
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true; if (encMode) btn.classList.add("loading");
+    try { if (await send(ta.value)) { ta.value = ""; autoGrow(ta, 84); ta.focus(); } }
+    finally { sending = false; btn.disabled = false; btn.classList.remove("loading"); }
   };
   ta.addEventListener("input", () => autoGrow(ta, 84));
   ta.addEventListener("keydown", (e) => {

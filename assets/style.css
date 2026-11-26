@@ -468,6 +468,29 @@ mark { background: rgba(255, 200, 0, .38); color: inherit; border-radius: 3px; p
 .feed-item.skeleton i:first-child { width: 30%; }
 .small-empty { padding: 36px 16px; }
 .center-text { text-align: center; }
+/* pesan terenkripsi */
+.composer.encrypting { border-color: color-mix(in srgb, var(--ok) 55%, var(--border)); }
+.enc-row { padding: 10px 14px 12px; border-top: 1px dashed var(--border); background: color-mix(in srgb, var(--ok) 6%, var(--surface)); animation: fadein .2s ease; }
+.enc-note { display: flex; gap: 8px; font-size: 12.5px; color: var(--text-2); margin-bottom: 10px; line-height: 1.45; }
+.enc-note .i { width: 16px; height: 16px; color: var(--ok); margin-top: 1px; }
+.enc-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.enc-fields input { width: 100%; height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font-size: 14px; }
+.enc-fields .pw-wrap input { padding-right: 42px; }
+.enc-fields .pw-wrap .icon-btn { top: 4px; right: 4px; }
+.enc-fields input:focus { outline: none; border-color: var(--primary); box-shadow: var(--ring); }
+#r-lock.on { background: color-mix(in srgb, var(--ok) 14%, var(--surface)); border-color: color-mix(in srgb, var(--ok) 45%, transparent); color: var(--ok); }
+.enc-badge { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); white-space: nowrap; }
+.enc-badge .i { width: 13px; height: 13px; }
+.enc-locked { padding: 12px 14px; border-radius: 12px; border: 1px dashed var(--border-strong); background: repeating-linear-gradient(135deg, var(--surface-2) 0 10px, transparent 10px 20px); }
+.enc-locked p { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.enc-locked p + p { margin-top: 6px; }
+.enc-locked .i { width: 16px; height: 16px; color: var(--muted); }
+@media (max-width: 760px) {
+  .enc-fields { grid-template-columns: 1fr; }
+  #r-lock span { display: none; }
+  .composer-bar #r-lock { flex: 0 0 auto; }
+}
+
 .invite-code { margin: 18px 0 14px; padding: 16px; border-radius: 14px; text-align: center; font-family: var(--mono); font-size: 30px; font-weight: 800; letter-spacing: .18em; background: var(--primary-soft); color: var(--primary); user-select: all; }
 .invite-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .invite-actions .btn { flex: 1 1 auto; }

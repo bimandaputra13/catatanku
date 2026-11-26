@@ -124,14 +124,26 @@ service cloud.firestore {
               || isRoomOwner(roomId));
       }
 
-      // Feed kiriman teks
+      // Feed kiriman teks (biasa, atau terenkripsi dengan password: text kosong + enc)
       match /items/{itemId} {
+        function validPlainItem(d) {
+          return d.keys().hasOnly(['text', 'uid', 'name', 'createdAt'])
+            && d.text is string && d.text.size() > 0 && d.text.size() <= 20000;
+        }
+        function validEncItem(d) {
+          return d.keys().hasOnly(['text', 'enc', 'hint', 'uid', 'name', 'createdAt'])
+            && d.text == ''
+            && d.enc is map
+            && d.enc.keys().hasOnly(['v', 'salt', 'iter', 'iv', 'd'])
+            && d.enc.salt is string && d.enc.iv is string
+            && d.enc.iter is int && d.enc.iter >= 100000
+            && d.enc.d is string && d.enc.d.size() > 0 && d.enc.d.size() <= 110000
+            && d.hint is string && d.hint.size() <= 100;
+        }
         allow read: if isMember(roomId);
         allow create: if isMember(roomId)
-          && request.resource.data.keys().hasOnly(['text', 'uid', 'name', 'createdAt'])
+          && (validPlainItem(request.resource.data) || validEncItem(request.resource.data))
           && request.resource.data.uid == request.auth.uid
-          && request.resource.data.text is string
-          && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 20000
           && validName(request.resource.data.name)
           && request.resource.data.createdAt == request.time;
         allow delete: if isMember(roomId)

@@ -86,6 +86,30 @@ export async function decryptText(key, payload) {
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64decode(payload.iv) }, key, b64decode(payload.d));
   return dec.decode(pt);
 }
+/**
+ * Enkripsi teks dengan password (untuk pesan rahasia di room).
+ * Setiap pesan punya salt & IV acak sendiri. Hasil: { v, salt, iter, iv, d } (semua base64).
+ */
+export async function encryptWithPassword(password, text) {
+  const salt = rand(16);
+  const key = await deriveKek(password, salt, PBKDF2_ITER);
+  const iv = rand(12);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(text)));
+  return { v: 1, salt: b64encode(salt), iter: PBKDF2_ITER, iv: b64encode(iv), d: b64encode(ct) };
+}
+
+/** Kebalikan encryptWithPassword. Melempar error code "bad-password" jika password salah. */
+export async function decryptWithPassword(password, p) {
+  const key = await deriveKek(password, b64decode(p.salt), p.iter || PBKDF2_ITER);
+  try {
+    return dec.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64decode(p.iv) }, key, b64decode(p.d)));
+  } catch {
+    const e = new Error("Password salah.");
+    e.code = "bad-password";
+    throw e;
+  }
+}
+
 export async function encryptBytes(key, u8) {
   const iv = rand(12);
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, u8));
