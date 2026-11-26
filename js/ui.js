@@ -52,12 +52,12 @@ export function toast(msg, type = "info", ms = 3200) {
 
 // ---------- Modal ----------
 let modalOpen = null;
-export function openModal(content, { onClose, wide = false } = {}) {
+export function openModal(content, { onClose, wide = false, sheet = false } = {}) {
   closeModal();
   const root = document.getElementById("modal-root");
   const wrap = document.createElement("div");
-  wrap.className = "modal-backdrop";
-  wrap.innerHTML = `<div class="modal ${wide ? "modal-wide" : ""}" role="dialog" aria-modal="true"></div>`;
+  wrap.className = `modal-backdrop${sheet ? " is-sheet" : ""}`;
+  wrap.innerHTML = `<div class="modal ${wide ? "modal-wide" : ""} ${sheet ? "sheet" : ""}" role="dialog" aria-modal="true"></div>`;
   const box = wrap.firstElementChild;
   setHTML(box, content);
   root.appendChild(wrap);

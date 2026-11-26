@@ -1,6 +1,6 @@
 // Entry point: setup, router, shell aplikasi, halaman autentikasi.
 import { firebaseConfig } from "./firebase-config.js";
-import { html, setHTML, icon, $, $$, toast, confirmDialog, closeModal, esc } from "./ui.js";
+import { html, setHTML, icon, $, $$, toast, confirmDialog, openModal, closeModal, esc } from "./ui.js";
 
 const app = document.getElementById("app");
 const isConfigured = firebaseConfig.apiKey && !/^GANTI/.test(firebaseConfig.apiKey);
@@ -233,22 +233,48 @@ app.addEventListener("click", async (e) => {
     if (goEl) { go(goEl.dataset.go); return; }
     const act = e.target.closest("[data-action]")?.dataset.action;
     if (!act) return;
-    if (act === "menu-mobile") { e.stopPropagation(); toggleMenu(); }
-    if (act === "hide-banner") $("#verify-banner")?.remove();
-    if (act === "verify") {
-      toggleMenu(false);
-      try { await fb.sendEmailVerification(fb.auth.currentUser); toast("Email verifikasi terkirim.", "success"); }
-      catch (err) { toast(authError(err), "error"); }
-    }
-    if (act === "reset") {
-      toggleMenu(false);
-      const ok = await confirmDialog({ title: "Ganti password akun", message: `Link untuk mengganti password akan dikirim ke ${currentUser.email}.`, okText: "Kirim link" });
-      if (!ok) return;
-      try { await fb.sendPasswordResetEmail(fb.auth, currentUser.email); toast("Link ganti password terkirim. Cek email Anda.", "success"); }
-      catch (err) { toast(authError(err), "error"); }
-    }
-    if (act === "logout") { toggleMenu(false); logout(); }
+    if (act === "menu-mobile") { e.stopPropagation(); openAccountSheet(); return; }
+    if (act === "hide-banner") { $("#verify-banner")?.remove(); return; }
+    if (["verify", "reset", "logout"].includes(act)) { toggleMenu(false); accountAction(act); }
 });
+
+async function accountAction(act) {
+  if (act === "verify") {
+    try { await fb.sendEmailVerification(fb.auth.currentUser); toast("Email verifikasi terkirim.", "success"); }
+    catch (err) { toast(authError(err), "error"); }
+  } else if (act === "reset") {
+    const ok = await confirmDialog({ title: "Ganti password akun", message: `Link untuk mengganti password akan dikirim ke ${currentUser.email}.`, okText: "Kirim link" });
+    if (!ok) return;
+    try { await fb.sendPasswordResetEmail(fb.auth, currentUser.email); toast("Link ganti password terkirim. Cek email Anda.", "success"); }
+    catch (err) { toast(authError(err), "error"); }
+  } else if (act === "logout") {
+    logout();
+  }
+}
+
+/** Menu akun versi ponsel: bottom sheet (di luar header agar tidak terpotong). */
+function openAccountSheet() {
+  const u = currentUser;
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const m = openModal(html`
+    <div class="sheet-head">
+      <div class="avatar lg">${initials(u)}</div>
+      <div><b>${u.displayName || "Pengguna"}</b><span class="muted">${u.email}</span></div>
+    </div>
+    <div class="sheet-list">
+      <button data-sheet="theme">${icon(dark ? "sun" : "moon")} ${dark ? "Mode terang" : "Mode gelap"}</button>
+      ${!u.emailVerified ? html`<button data-sheet="verify">${icon("mail")} Kirim email verifikasi</button>` : ""}
+      <button data-sheet="reset">${icon("key")} Ganti password akun</button>
+      <button data-sheet="logout" class="danger">${icon("logout")} Keluar</button>
+    </div>`, { sheet: true });
+  m.el.addEventListener("click", (e) => {
+    const a = e.target.closest("[data-sheet]")?.dataset.sheet;
+    if (!a) return;
+    m.close();
+    if (a === "theme") toggleTheme();
+    else setTimeout(() => accountAction(a), 220);
+  });
+}
 
 async function logout() {
   const ok = await confirmDialog({ title: "Keluar?", message: "Data cache di perangkat ini akan dibersihkan.", okText: "Keluar" });

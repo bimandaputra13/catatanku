@@ -436,6 +436,21 @@ mark { background: rgba(255, 200, 0, .38); color: inherit; border-radius: 3px; p
 .modal-text { color: var(--text-2); margin: 8px 0 0; font-size: 14px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
+/* bottom sheet (menu akun di ponsel) */
+.modal-backdrop.is-sheet { align-items: end; padding: 0; }
+.modal.sheet { max-width: 520px; border-radius: 22px 22px 0 0; padding: 10px 14px calc(18px + env(safe-area-inset-bottom)); transform: translateY(100%); transition: transform .25s cubic-bezier(.2, .8, .2, 1); }
+.modal.sheet::before { content: ""; display: block; width: 40px; height: 4px; border-radius: 4px; background: var(--border-strong); margin: 0 auto 14px; }
+.modal-backdrop.show .modal.sheet { transform: none; }
+.sheet-head { display: flex; align-items: center; gap: 12px; padding: 4px 6px 14px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.sheet-head > div:last-child { display: flex; flex-direction: column; min-width: 0; }
+.sheet-head span { font-size: 13px; word-break: break-all; }
+.avatar.lg { width: 46px; height: 46px; font-size: 15px; display: grid; place-items: center; flex: none; }
+.sheet-list { display: flex; flex-direction: column; }
+.sheet-list button { display: flex; align-items: center; gap: 12px; padding: 14px 10px; border: 0; background: none; border-radius: 12px; font-size: 15px; font-weight: 500; text-align: left; color: var(--text); }
+.sheet-list button:active, .sheet-list button:hover { background: var(--surface-2); }
+.sheet-list button .i { color: var(--muted); }
+.sheet-list button.danger, .sheet-list button.danger .i { color: var(--danger); }
+
 /* ---------- navigasi mobile ---------- */
 .nav-mobile { display: none; }
 @media (max-width: 760px) {
