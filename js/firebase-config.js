@@ -1,11 +1,3 @@
-// ============================================================================
-//  KONFIGURASI FIREBASE
-//  Diambil dari Firebase Console → Project settings → General → Your apps.
-//
-//  Catatan keamanan: nilai-nilai ini BUKAN rahasia (memang dirancang untuk
-//  berada di kode frontend). Keamanan data dijamin oleh Firestore Security
-//  Rules (file firestore.rules) — pastikan rules tersebut sudah dipublikasikan.
-// ============================================================================
 export const firebaseConfig = {
   apiKey: "AIzaSyB0NwwbcUQXc-pefMF47HDmYC34E6_K3eM",
   authDomain: "banggondrong-fc090.firebaseapp.com",
