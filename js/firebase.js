@@ -29,6 +29,6 @@ export {
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 
 export {
-  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy,
+  collection, doc, getDoc, getDocFromServer, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit,
   serverTimestamp, writeBatch, Bytes, terminate, clearIndexedDbPersistence, Timestamp
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";

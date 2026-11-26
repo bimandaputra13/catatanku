@@ -115,6 +115,7 @@ function parseHash() {
 }
 
 let shellMounted = false;
+const AFTER_LOGIN_KEY = "catatku-after-login";
 
 async function route() {
   if (!authResolved) return;
@@ -123,10 +124,21 @@ async function route() {
   const publicPaths = ["/login", "/register", "/forgot"];
 
   if (!currentUser) {
-    if (!publicPaths.includes(path)) { history.replaceState(null, "", "#/login"); return renderAuth("/login"); }
+    if (!publicPaths.includes(path)) {
+      // Ingat tujuan (mis. link undangan room) untuk dibuka setelah login
+      if (path !== "/") try { sessionStorage.setItem(AFTER_LOGIN_KEY, location.hash); } catch {}
+      history.replaceState(null, "", "#/login");
+      return renderAuth("/login");
+    }
     return renderAuth(path);
   }
-  if (publicPaths.includes(path)) { history.replaceState(null, "", "#/"); return route(); }
+  if (publicPaths.includes(path)) {
+    let next = "#/";
+    try { next = sessionStorage.getItem(AFTER_LOGIN_KEY) || "#/"; sessionStorage.removeItem(AFTER_LOGIN_KEY); } catch {}
+    if (!/^#\/[\w\-/?=&%]*$/.test(next)) next = "#/";
+    history.replaceState(null, "", next);
+    return route();
+  }
 
   closeModal();
   // Cleanup halaman sebelumnya (mis. simpan catatan yang belum tersimpan)
@@ -135,16 +147,21 @@ async function route() {
 
   mountShell();
   const view = $("#view");
-  const navKey = path.startsWith("/note") ? "" : path === "/" ? "home" : path.slice(1);
+  const navKey = path.startsWith("/note") ? "" : path === "/" ? "home"
+    : /^\/(live|rooms|room|join)/.test(path) ? "live" : path.slice(1);
   $$("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === navKey));
 
-  let mod, name;
+  let mod, name, id;
   const m = path.match(/^\/note\/([\w-]+)$/);
+  const mRoom = path.match(/^\/room\/([\w-]+)$/);
+  const mJoin = path.match(/^\/join\/([\w-]+)$/);
   try {
     if (path === "/") { mod = await import("./views/dashboard.js"); name = "dashboard"; }
     else if (path === "/search") { mod = await import("./views/search.js"); name = "search"; }
     else if (path === "/live") { mod = await import("./views/live.js"); name = "live"; }
-    else if (m) { mod = await import("./views/note.js"); name = "note"; }
+    else if (path === "/rooms" || mJoin) { mod = await import("./views/rooms.js"); name = "rooms"; id = mJoin?.[1]; }
+    else if (mRoom) { mod = await import("./views/room.js"); name = "room"; id = mRoom[1]; }
+    else if (m) { mod = await import("./views/note.js"); name = "note"; id = m[1]; }
     else { history.replaceState(null, "", "#/"); return route(); }
   } catch (e) {
     console.error(e);
@@ -156,7 +173,7 @@ async function route() {
   const swap = () => {
     view.replaceChildren();
     view.className = `view view-${name}`;
-    cleanup = mod.mount(view, { params, id: m?.[1], user: currentUser, store, fb, go }) || null;
+    cleanup = mod.mount(view, { params, id, user: fb.auth.currentUser || currentUser, store, fb, go }) || null;
     window.scrollTo({ top: 0, behavior: "instant" });
   };
   if (document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -401,7 +418,7 @@ function renderAuth(path) {
     try {
       if (mode === "login") {
         await fb.signInWithEmailAndPassword(fb.auth, email, form.password.value);
-        location.hash = "#/";
+        // Navigasi ditangani router (onAuthStateChanged) → beranda / tujuan sebelumnya
       } else if (mode === "register") {
         const name = form.name.value.trim();
         const pw = form.password.value;
@@ -413,8 +430,8 @@ function renderAuth(path) {
         await fb.updateProfile(cred.user, { displayName: name.slice(0, 60) });
         try { await fb.sendEmailVerification(cred.user); } catch {}
         toast(`Akun dibuat. Selamat datang, ${name}!`, "success");
+        // Render ulang shell agar nama baru tampil (router sudah mengarahkan ke tujuan)
         shellMounted = false;
-        location.hash = "#/";
         route();
       } else {
         await fb.sendPasswordResetEmail(fb.auth, email);

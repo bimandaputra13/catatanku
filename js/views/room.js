@@ -1,0 +1,317 @@
+// Isi room bersama: feed kiriman teks realtime antar akun, undangan, anggota.
+import {
+  html, setHTML, icon, $, $$, toast, confirmDialog, openModal, timeAgo, toMillis, copyText, autoGrow
+} from "../ui.js";
+import { liveTabs } from "./rooms.js";
+
+const COLLAPSE_LINES = 12;
+
+export function mount(root, { store, go, id: roomId, fb }) {
+  const me = store.getUid();
+  const displayName = () => fb.auth.currentUser?.displayName || "Pengguna";
+  let alive = true;
+  let room = null;
+  let members = [];
+  let items = [];
+  let firstItems = true;
+  const seen = new Set();
+  const expanded = new Set();
+  const unsubs = [];
+  let gone = false;
+
+  setHTML(root, html`
+    ${liveTabs("rooms")}
+    <div class="room-head">
+      <a href="#/rooms" class="icon-btn" aria-label="Kembali ke daftar room">${icon("back")}</a>
+      <div class="room-title">
+        <h1 id="r-name">Memuat…</h1>
+        <button class="link small" id="r-members-btn">${icon("users")} <span id="r-count">–</span></button>
+      </div>
+      <button class="btn btn-primary btn-sm" id="r-invite">${icon("share")} <span>Undang</span></button>
+      <div class="menu-wrap">
+        <button class="icon-btn" id="r-menu-btn" aria-label="Lainnya">${icon("more")}</button>
+        <div class="menu menu-right" id="r-menu" hidden></div>
+      </div>
+    </div>
+
+    <form class="composer" id="r-form" novalidate>
+      <textarea id="r-text" rows="3" placeholder="Tulis atau tempel teks untuk dibagikan ke semua anggota…" maxlength="${store.ROOM_LIMITS.text}" aria-label="Teks untuk dikirim"></textarea>
+      <div class="composer-bar">
+        <small class="muted only-desktop">Ctrl + Enter untuk kirim</small>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost btn-sm" id="r-paste">${icon("paste")} Tempel &amp; kirim</button>
+        <button type="submit" class="btn btn-primary btn-sm">${icon("send")} Kirim</button>
+      </div>
+    </form>
+
+    <div id="r-feed" class="feed"><div class="feed-item skeleton"><i></i><i></i></div><div class="feed-item skeleton"><i></i><i></i></div></div>`);
+
+  const nameEl = $("#r-name", root);
+  const countEl = $("#r-count", root);
+  const feed = $("#r-feed", root);
+  const form = $("#r-form", root);
+  const ta = $("#r-text", root);
+  const menu = $("#r-menu", root);
+  const isOwner = () => room && room.ownerId === me;
+
+  // ------------------------------------------------------------ Listener
+  function lostAccess(msg) {
+    if (gone || !alive) return;
+    gone = true;
+    unsubs.forEach((u) => u());
+    store.forgetRoom(roomId);
+    setHTML(root, html`${liveTabs("rooms")}<div class="empty">
+      <div class="empty-icon">${icon("users")}</div>
+      <h3>Tidak bisa membuka room</h3>
+      <p class="muted">${msg}</p>
+      <a class="btn btn-primary" href="#/rooms">Kembali ke daftar room</a></div>`);
+  }
+  const onErr = (e) => {
+    console.error(e);
+    if (e.code === "permission-denied") lostAccess("Anda bukan anggota room ini (mungkin sudah dikeluarkan atau room dihapus).");
+    else toast("Koneksi room terputus. Periksa internet.", "error");
+  };
+
+  unsubs.push(store.watchRoom(roomId, (r) => {
+    if (!alive) return;
+    if (!r) return lostAccess("Room ini sudah dihapus oleh pemiliknya.");
+    room = r;
+    nameEl.textContent = r.name;
+    document.title = `${r.name} · Catatku`;
+    renderFeed();
+  }, onErr));
+
+  unsubs.push(store.watchMembers(roomId, (list) => {
+    if (!alive) return;
+    members = list;
+    countEl.textContent = `${list.length} anggota`;
+    if (!list.some((m) => m.uid === me) && list.length) lostAccess("Anda sudah dikeluarkan dari room ini.");
+  }, onErr));
+
+  unsubs.push(store.watchItems(roomId, (list) => {
+    if (!alive) return;
+    items = list;
+    renderFeed();
+  }, onErr));
+
+  // ------------------------------------------------------------ Feed
+  function initials(n) { return String(n || "?").trim().split(/\s+/).slice(0, 2).map((p) => p[0]).join("").toUpperCase(); }
+
+  function renderFeed() {
+    if (!room) return;
+    if (!items.length) {
+      setHTML(feed, html`<div class="empty small-empty">
+        <div class="empty-icon">${icon("send")}</div>
+        <h3>Belum ada kiriman</h3>
+        <p class="muted">Teks yang dikirim akan langsung muncul di semua perangkat anggota.</p></div>`);
+      firstItems = false;
+      return;
+    }
+    const fresh = new Set();
+    items.forEach((it) => { if (!seen.has(it.id)) { if (!firstItems && it.uid !== me) fresh.add(it.id); seen.add(it.id); } });
+    firstItems = false;
+    setHTML(feed, html`${items.map((it) => {
+      const mine = it.uid === me;
+      const long = it.text.split("\n").length > COLLAPSE_LINES || it.text.length > 900;
+      const open = expanded.has(it.id);
+      return html`<article class="feed-item ${mine ? "mine" : ""} ${fresh.has(it.id) ? "fresh" : ""}" data-id="${it.id}">
+        <header>
+          <span class="avatar sm" aria-hidden="true">${initials(it.name)}</span>
+          <b>${it.name}${mine ? " (Anda)" : ""}</b>
+          <span class="muted small" title="${new Date(toMillis(it.createdAt)).toLocaleString("id-ID")}">${it.pending ? "mengirim…" : timeAgo(toMillis(it.createdAt))}</span>
+        </header>
+        <div class="feed-text ${long && !open ? "collapsed" : ""}">${it.text}</div>
+        <footer>
+          ${long ? html`<button class="link small" data-act="toggle">${open ? "Ringkas" : "Tampilkan semua"}</button>` : ""}
+          <span class="spacer"></span>
+          ${mine || isOwner() ? html`<button class="icon-btn sm" data-act="del" title="Hapus" aria-label="Hapus kiriman">${icon("trash")}</button>` : ""}
+          <button class="btn btn-ghost btn-sm" data-act="copy">${icon("copy")} Salin</button>
+        </footer>
+      </article>`;
+    })}
+    ${items.length >= store.ROOM_LIMITS.feed ? html`<p class="muted small center-text">Menampilkan ${store.ROOM_LIMITS.feed} kiriman terbaru.</p>` : ""}`);
+  }
+
+  feed.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    const id = btn.closest("[data-id]")?.dataset.id;
+    const it = items.find((x) => x.id === id);
+    if (!it) return;
+    const act = btn.dataset.act;
+    if (act === "copy") {
+      (await copyText(it.text)) ? toast("Disalin ke clipboard.", "success", 1400) : toast("Gagal menyalin.", "error");
+    } else if (act === "toggle") {
+      expanded.has(id) ? expanded.delete(id) : expanded.add(id);
+      renderFeed();
+    } else if (act === "del") {
+      const ok = await confirmDialog({ title: "Hapus kiriman?", message: "Kiriman akan hilang dari semua anggota.", okText: "Hapus", danger: true });
+      if (!ok) return;
+      try { await store.deleteItem(roomId, id); } catch { toast("Gagal menghapus.", "error"); }
+    }
+  });
+
+  // ------------------------------------------------------------ Kirim
+  async function send(text) {
+    text = text.replace(/\s+$/, "");
+    if (!text.trim()) { toast("Teks masih kosong."); return false; }
+    if (text.length > store.ROOM_LIMITS.text) { toast(`Maksimal ${store.ROOM_LIMITS.text.toLocaleString("id-ID")} karakter per kiriman.`, "error"); return false; }
+    try {
+      // Tidak menunggu konfirmasi server: kiriman langsung tampil ("mengirim…") lalu tersinkron.
+      store.sendItem(roomId, text, displayName()).catch((err) => {
+        console.error(err);
+        toast(err.code === "permission-denied" ? "Gagal mengirim: Anda bukan anggota room." : "Gagal mengirim.", "error");
+      });
+      return true;
+    } catch (err) { toast(err.message, "error"); return false; }
+  }
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    if (await send(ta.value)) { ta.value = ""; autoGrow(ta, 84); ta.focus(); }
+  };
+  ta.addEventListener("input", () => autoGrow(ta, 84));
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); }
+  });
+  $("#r-paste", root).onclick = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return toast("Clipboard kosong.");
+      if (await send(text)) toast("Teks dari clipboard terkirim.", "success", 1500);
+    } catch {
+      toast("Browser tidak mengizinkan akses clipboard. Tempel manual (Ctrl+V / tekan lama) lalu Kirim.", "info", 4500);
+      ta.focus();
+    }
+  };
+
+  // ------------------------------------------------------------ Undangan
+  const inviteLink = () => `${location.origin}${location.pathname}#/join/${room.code}`;
+
+  function openInvite() {
+    if (!room) return;
+    const m = openModal(html`
+      <h3 class="modal-title">${icon("share")} Undang ke "${room.name}"</h3>
+      <p class="modal-text">Bagikan kode atau link ini. Siapa pun yang punya akun Catatku dan kode ini bisa bergabung.</p>
+      <div class="invite-code" id="i-code">${store.formatCode(room.code)}</div>
+      <div class="invite-actions">
+        <button class="btn btn-ghost" data-i="code">${icon("copy")} Salin kode</button>
+        <button class="btn btn-primary" data-i="link">${icon("link")} Salin link</button>
+        ${navigator.share ? html`<button class="btn btn-ghost" data-i="share">${icon("share")} Bagikan…</button>` : ""}
+      </div>
+      ${isOwner() ? html`<p class="muted small">Kode bocor? Ganti kode — kode & link lama langsung tidak berlaku (anggota yang sudah ada tetap di room).</p>
+        <button class="btn btn-ghost btn-sm" data-i="rotate">${icon("sync")} Ganti kode undangan</button>` : ""}
+      <div class="modal-actions"><button class="btn btn-ghost" data-i="close">Tutup</button></div>`);
+    m.el.addEventListener("click", async (e) => {
+      const a = e.target.closest("[data-i]")?.dataset.i;
+      if (!a) return;
+      if (a === "close") m.close();
+      else if (a === "code") (await copyText(store.formatCode(room.code))) && toast("Kode disalin.", "success", 1400);
+      else if (a === "link") (await copyText(inviteLink())) && toast("Link undangan disalin.", "success", 1400);
+      else if (a === "share") { try { await navigator.share({ title: `Gabung room ${room.name}`, text: `Gabung room "${room.name}" di Catatku. Kode: ${store.formatCode(room.code)}`, url: inviteLink() }); } catch {} }
+      else if (a === "rotate") {
+        const btn = e.target.closest("[data-i]");
+        btn.disabled = true; btn.classList.add("loading");
+        try {
+          const code = await store.rotateCode(roomId, room.code);
+          room = { ...room, code };
+          $("#i-code", m.el).textContent = store.formatCode(code);
+          toast("Kode undangan diganti.", "success");
+        } catch { toast("Gagal mengganti kode.", "error"); }
+        btn.disabled = false; btn.classList.remove("loading");
+      }
+    });
+  }
+  $("#r-invite", root).onclick = openInvite;
+
+  // ------------------------------------------------------------ Anggota
+  function openMembers() {
+    const m = openModal(html`<h3 class="modal-title">${icon("users")} Anggota (${members.length})</h3><div class="member-list" id="m-list"></div>
+      <div class="modal-actions"><button class="btn btn-ghost" data-m="close">Tutup</button></div>`);
+    const render = () => setHTML($("#m-list", m.el), html`${members.map((mb) => html`
+      <div class="member-row">
+        <span class="avatar sm">${initials(mb.name)}</span>
+        <div class="member-info"><b>${mb.name}${mb.uid === me ? " (Anda)" : ""}</b>
+          <small class="muted">${mb.role === "owner" ? "Pemilik" : "Anggota"} · bergabung ${timeAgo(toMillis(mb.joinedAt))}</small></div>
+        ${isOwner() && mb.uid !== me ? html`<button class="btn btn-ghost btn-sm danger-text" data-kick="${mb.uid}">Keluarkan</button>` : ""}
+      </div>`)}`);
+    render();
+    m.el.addEventListener("click", async (e) => {
+      if (e.target.closest('[data-m="close"]')) return m.close();
+      const k = e.target.closest("[data-kick]");
+      if (!k) return;
+      const mb = members.find((x) => x.uid === k.dataset.kick);
+      if (!mb) return;
+      k.disabled = true; k.classList.add("loading");
+      try {
+        const code = await store.kickMember(roomId, mb.uid, room.code);
+        room = { ...room, code };
+        members = members.filter((x) => x.uid !== mb.uid);
+        render();
+        toast(`${mb.name} dikeluarkan. Kode undangan otomatis diganti.`, "success", 4000);
+      } catch (err) { console.error(err); toast("Gagal mengeluarkan anggota.", "error"); k.disabled = false; k.classList.remove("loading"); }
+    });
+  }
+  $("#r-members-btn", root).onclick = openMembers;
+
+  // ------------------------------------------------------------ Menu
+  $("#r-menu-btn", root).onclick = (e) => {
+    e.stopPropagation();
+    if (!menu.hidden) { menu.hidden = true; return; }
+    setHTML(menu, isOwner()
+      ? html`<button data-r="rename">${icon("edit")} Ganti nama room</button>
+             <button data-r="members">${icon("users")} Anggota</button>
+             <button data-r="delete" class="danger">${icon("trash")} Hapus room</button>`
+      : html`<button data-r="members">${icon("users")} Anggota</button>
+             <button data-r="leave" class="danger">${icon("logout")} Keluar dari room</button>`);
+    menu.hidden = false;
+  };
+  const closeMenu = (e) => { if (!e.target.closest("#r-menu") && !e.target.closest("#r-menu-btn")) menu.hidden = true; };
+  document.addEventListener("click", closeMenu);
+
+  menu.addEventListener("click", async (e) => {
+    const a = e.target.closest("[data-r]")?.dataset.r;
+    if (!a) return;
+    menu.hidden = true;
+    if (a === "members") openMembers();
+    else if (a === "rename") renameDialog();
+    else if (a === "leave") {
+      const ok = await confirmDialog({ title: "Keluar dari room?", message: "Anda perlu kode undangan lagi untuk bergabung kembali.", okText: "Keluar", danger: true });
+      if (!ok) return;
+      try { gone = true; unsubs.forEach((u) => u()); await store.leaveRoom(roomId); toast("Anda keluar dari room.", "success"); go("#/rooms"); }
+      catch { gone = false; toast("Gagal keluar dari room.", "error"); }
+    } else if (a === "delete") {
+      const ok = await confirmDialog({ title: "Hapus room?", message: `Room "${room.name}" beserta semua kirimannya akan dihapus permanen untuk semua anggota.`, okText: "Hapus room", danger: true });
+      if (!ok) return;
+      const t = toast("Menghapus room…", "info", 60000);
+      try { gone = true; unsubs.forEach((u) => u()); await store.deleteRoom(roomId, room.code); t.close(); toast("Room dihapus.", "success"); go("#/rooms"); }
+      catch (err) { console.error(err); t.close(); gone = false; toast("Gagal menghapus room.", "error"); }
+    }
+  });
+
+  function renameDialog() {
+    const m = openModal(html`<form class="stack" novalidate>
+      <h3 class="modal-title">${icon("edit")} Ganti nama room</h3>
+      <label class="field"><span>Nama room</span><input name="n" maxlength="60" required autofocus></label>
+      <div class="modal-actions"><button type="button" class="btn btn-ghost" data-c>Batal</button><button class="btn btn-primary">Simpan</button></div></form>`);
+    const f = $("form", m.el);
+    f.n.value = room.name;
+    $("[data-c]", f).onclick = () => m.close();
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      if (!f.n.value.trim()) return;
+      try { await store.renameRoom(roomId, f.n.value); m.close(); toast("Nama room diganti.", "success"); }
+      catch { toast("Gagal mengganti nama.", "error"); }
+    };
+  }
+
+  const timer = setInterval(() => { if (items.length) renderFeed(); }, 60000);
+
+  return () => {
+    alive = false;
+    unsubs.forEach((u) => u());
+    clearInterval(timer);
+    document.removeEventListener("click", closeMenu);
+    document.title = "Catatku";
+  };
+}

@@ -1,7 +1,7 @@
 // Lapisan data: catatan (realtime), lampiran (dipecah per chunk di Firestore), live pad.
 import {
-  db, collection, doc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy,
-  serverTimestamp, Bytes, writeBatch
+  db, collection, doc, getDocs, getDocFromServer, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy,
+  limit, serverTimestamp, Bytes, writeBatch
 } from "./firebase.js";
 import { encryptBytes, decryptBytes, encryptText, decryptText } from "./crypto.js";
 import { toMillis } from "./ui.js";
@@ -245,4 +245,148 @@ export function watchLive(cb, onErr) {
 }
 export function writeLive(text, device, session) {
   return setDoc(liveRef(), { text, device, session, updatedAt: serverTimestamp() });
+}
+
+// ----------------------------------------------------------------------------
+// Room bersama (berbagi teks antar akun dengan kode undangan)
+//
+//  rooms/{roomId}                 name, ownerId, code, createdAt, updatedAt
+//  rooms/{roomId}/members/{uid}   name, code, role, joinedAt   (keanggotaan)
+//  rooms/{roomId}/items/{itemId}  text, uid, name, createdAt   (feed kiriman)
+//  invites/{code}                 roomId, createdAt            (kode → room)
+//  users/{uid}/rooms/{roomId}     name, role, joinedAt         (daftar room saya)
+//
+//  Keamanan ditegakkan oleh firestore.rules: hanya anggota yang bisa membaca room,
+//  bergabung wajib menyertakan kode undangan yang sedang berlaku.
+// ----------------------------------------------------------------------------
+export const ROOM_LIMITS = { name: 60, text: 20000, feed: 100 };
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // tanpa 0/O/1/I agar tidak tertukar
+export function genCode() {
+  const r = crypto.getRandomValues(new Uint8Array(8));
+  return Array.from(r, (b) => CODE_ALPHABET[b & 31]).join("");
+}
+export const normalizeCode = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+export const formatCode = (c) => (c && c.length === 8 ? `${c.slice(0, 4)}-${c.slice(4)}` : c || "");
+export const getUid = () => uid;
+
+const roomRef = (id) => doc(db, "rooms", id);
+const inviteRef = (code) => doc(db, "invites", code);
+const memberRef = (roomId, u) => doc(db, "rooms", roomId, "members", u);
+const itemsCol = (roomId) => collection(db, "rooms", roomId, "items");
+const myRoomRef = (roomId) => doc(db, "users", uid, "rooms", roomId);
+const cleanName = (s, fb = "Pengguna") => (String(s || "").trim() || fb).slice(0, ROOM_LIMITS.name);
+
+export function watchMyRooms(cb, onErr) {
+  return onSnapshot(query(collection(db, "users", uid, "rooms"), orderBy("joinedAt", "desc")),
+    (s) => cb(s.docs.map((d) => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) }))), onErr);
+}
+
+export async function createRoom(name, displayName) {
+  name = cleanName(name, "Room");
+  for (let attempt = 0; ; attempt++) {
+    const id = doc(collection(db, "rooms")).id;
+    const code = genCode();
+    const b = writeBatch(db);
+    b.set(roomRef(id), { name, ownerId: uid, code, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    b.set(memberRef(id, uid), { name: cleanName(displayName), code, role: "owner", joinedAt: serverTimestamp() });
+    b.set(inviteRef(code), { roomId: id, createdAt: serverTimestamp() });
+    b.set(myRoomRef(id), { name, role: "owner", joinedAt: serverTimestamp() });
+    try { await b.commit(); return id; }
+    catch (e) { if (e.code !== "permission-denied" || attempt >= 3) throw e; } // kode bentrok → coba kode lain
+  }
+}
+
+export async function joinRoom(rawCode, displayName) {
+  const code = normalizeCode(rawCode);
+  if (code.length !== 8) throw new Error("Kode undangan harus 8 karakter.");
+  const inv = await getDocFromServer(inviteRef(code));
+  if (!inv.exists()) throw new Error("Kode undangan tidak valid atau sudah diganti pemilik room.");
+  const roomId = inv.get("roomId");
+
+  // Sudah anggota? (hanya anggota yang bisa membaca room)
+  try {
+    const r = await getDocFromServer(roomRef(roomId));
+    if (r.exists()) {
+      await setDoc(myRoomRef(roomId), { name: r.get("name"), role: r.get("ownerId") === uid ? "owner" : "member", joinedAt: serverTimestamp() });
+      return roomId;
+    }
+  } catch (e) { if (e.code !== "permission-denied") throw e; }
+
+  const b = writeBatch(db);
+  b.set(memberRef(roomId, uid), { name: cleanName(displayName), code, role: "member", joinedAt: serverTimestamp() });
+  b.set(myRoomRef(roomId), { name: "Room", role: "member", joinedAt: serverTimestamp() });
+  try { await b.commit(); }
+  catch (e) { if (e.code === "permission-denied") throw new Error("Kode undangan tidak valid atau sudah diganti pemilik room."); throw e; }
+  try { const r = await getDocFromServer(roomRef(roomId)); await updateDoc(myRoomRef(roomId), { name: r.get("name") }); } catch {}
+  return roomId;
+}
+
+export const watchRoom = (id, cb, onErr) =>
+  onSnapshot(roomRef(id), (s) => cb(s.exists() ? { id: s.id, ...s.data({ serverTimestamps: "estimate" }) } : null), onErr);
+
+export const watchMembers = (id, cb, onErr) =>
+  onSnapshot(query(collection(db, "rooms", id, "members"), orderBy("joinedAt", "asc")),
+    (s) => cb(s.docs.map((d) => ({ uid: d.id, ...d.data({ serverTimestamps: "estimate" }) }))), onErr);
+
+export const watchItems = (id, cb, onErr) =>
+  onSnapshot(query(itemsCol(id), orderBy("createdAt", "desc"), limit(ROOM_LIMITS.feed)),
+    (s) => cb(s.docs.map((d) => ({ id: d.id, pending: d.metadata.hasPendingWrites, ...d.data({ serverTimestamps: "estimate" }) }))), onErr);
+
+export function sendItem(roomId, text, displayName) {
+  if (text.length > ROOM_LIMITS.text) throw new Error(`Maksimal ${ROOM_LIMITS.text.toLocaleString("id-ID")} karakter per kiriman.`);
+  return setDoc(doc(itemsCol(roomId)), { text, uid, name: cleanName(displayName), createdAt: serverTimestamp() });
+}
+export const deleteItem = (roomId, itemId) => deleteDoc(doc(itemsCol(roomId), itemId));
+
+export async function leaveRoom(roomId) {
+  const b = writeBatch(db);
+  b.delete(memberRef(roomId, uid));
+  b.delete(myRoomRef(roomId));
+  await b.commit();
+}
+/** Hapus room dari daftar saya (mis. setelah dikeluarkan / room dihapus). */
+export const forgetRoom = (roomId) => deleteDoc(myRoomRef(roomId)).catch(() => {});
+
+export async function rotateCode(roomId, oldCode) {
+  for (let attempt = 0; ; attempt++) {
+    const code = genCode();
+    const b = writeBatch(db);
+    b.update(roomRef(roomId), { code, updatedAt: serverTimestamp() });
+    b.set(inviteRef(code), { roomId, createdAt: serverTimestamp() });
+    if (oldCode) b.delete(inviteRef(oldCode));
+    try { await b.commit(); return code; }
+    catch (e) { if (e.code !== "permission-denied" || attempt >= 3) throw e; }
+  }
+}
+
+/** Keluarkan anggota lalu ganti kode undangan agar tidak bisa masuk lagi dengan kode lama. */
+export async function kickMember(roomId, memberUid, oldCode) {
+  await deleteDoc(memberRef(roomId, memberUid));
+  return rotateCode(roomId, oldCode);
+}
+
+export async function renameRoom(roomId, name) {
+  name = cleanName(name, "Room");
+  await updateDoc(roomRef(roomId), { name, updatedAt: serverTimestamp() });
+  await setDoc(myRoomRef(roomId), { name }, { merge: true });
+  return name;
+}
+
+export async function deleteRoom(roomId, code) {
+  // Hapus feed dalam beberapa batch (maks 500 operasi per batch)
+  for (;;) {
+    const s = await getDocs(query(itemsCol(roomId), limit(400)));
+    if (s.empty) break;
+    const b = writeBatch(db);
+    s.docs.forEach((d) => b.delete(d.ref));
+    await b.commit();
+  }
+  const mem = await getDocs(collection(db, "rooms", roomId, "members"));
+  const b = writeBatch(db);
+  if (code) b.delete(inviteRef(code));
+  mem.docs.forEach((d) => { if (d.id !== uid) b.delete(d.ref); });
+  b.delete(memberRef(roomId, uid));
+  b.delete(roomRef(roomId));
+  b.delete(myRoomRef(roomId));
+  await b.commit();
 }

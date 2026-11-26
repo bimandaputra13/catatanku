@@ -1,6 +1,7 @@
 // Live Pad: satu area teks yang tersinkron realtime di semua perangkat yang login
 // dengan akun yang sama — praktis untuk copy–paste antar device.
 import { html, setHTML, icon, $, toast, confirmDialog, debounce, timeAgo, toMillis, deviceLabel, applyRemoteText, copyText } from "../ui.js";
+import { liveTabs } from "./rooms.js";
 
 export function mount(root, { store, go }) {
   const session = crypto.getRandomValues(new Uint32Array(2)).join("-");
@@ -10,6 +11,7 @@ export function mount(root, { store, go }) {
   let alive = true;
 
   setHTML(root, html`
+    ${liveTabs("live")}
     <div class="live-page">
       <div class="live-head">
         <div>

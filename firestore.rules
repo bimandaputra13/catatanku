@@ -60,7 +60,98 @@ service cloud.firestore {
         && d.createdAt is timestamp;
     }
 
+    // =========================================================================
+    //  ROOM BERSAMA
+    // =========================================================================
+    function signedIn() { return request.auth != null; }
+    function roomPath(roomId) { return /databases/$(database)/documents/rooms/$(roomId); }
+    function isMember(roomId) {
+      return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+    function isRoomOwner(roomId) {
+      return signedIn() && get(roomPath(roomId)).data.ownerId == request.auth.uid;
+    }
+    function validCode(c) { return c is string && c.matches('^[A-Z2-9]{8}$'); }
+    function validName(n) { return n is string && n.size() > 0 && n.size() <= 60; }
+
+    // Kode undangan → roomId. Hanya bisa diambil per kode (get), tidak bisa didaftar (list),
+    // jadi kode tidak bisa ditebak dengan menelusuri koleksi.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list, update: if false;
+      allow create: if signedIn()
+        && validCode(code)
+        && request.resource.data.keys().hasOnly(['roomId', 'createdAt'])
+        && request.resource.data.createdAt == request.time
+        && getAfter(roomPath(request.resource.data.roomId)).data.ownerId == request.auth.uid
+        && getAfter(roomPath(request.resource.data.roomId)).data.code == code;
+      allow delete: if signedIn() && get(roomPath(resource.data.roomId)).data.ownerId == request.auth.uid;
+    }
+
+    match /rooms/{roomId} {
+      function validRoom(d) {
+        return d.keys().hasOnly(['name', 'ownerId', 'code', 'createdAt', 'updatedAt'])
+          && validName(d.name) && validCode(d.code) && d.ownerId is string
+          && d.updatedAt == request.time;
+      }
+      allow read: if isMember(roomId);
+      allow create: if signedIn()
+        && validRoom(request.resource.data)
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+      allow update: if signedIn()
+        && resource.data.ownerId == request.auth.uid
+        && validRoom(request.resource.data)
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+
+      // Keanggotaan: bergabung sendiri WAJIB menyertakan kode undangan yang sedang berlaku.
+      match /members/{memberId} {
+        allow read: if isMember(roomId);
+        allow create: if signedIn()
+          && memberId == request.auth.uid
+          && request.resource.data.keys().hasOnly(['name', 'code', 'role', 'joinedAt'])
+          && validName(request.resource.data.name)
+          && request.resource.data.joinedAt == request.time
+          && request.resource.data.code == getAfter(roomPath(roomId)).data.code
+          && (request.resource.data.role == 'member'
+              || (request.resource.data.role == 'owner' && getAfter(roomPath(roomId)).data.ownerId == request.auth.uid));
+        // Keluar sendiri (kecuali pemilik), atau pemilik mengeluarkan anggota / menghapus room.
+        allow delete: if signedIn()
+          && ((memberId == request.auth.uid && get(roomPath(roomId)).data.ownerId != request.auth.uid)
+              || isRoomOwner(roomId));
+      }
+
+      // Feed kiriman teks
+      match /items/{itemId} {
+        allow read: if isMember(roomId);
+        allow create: if isMember(roomId)
+          && request.resource.data.keys().hasOnly(['text', 'uid', 'name', 'createdAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 20000
+          && validName(request.resource.data.name)
+          && request.resource.data.createdAt == request.time;
+        allow delete: if isMember(roomId)
+          && (resource.data.uid == request.auth.uid || isRoomOwner(roomId));
+      }
+    }
+
+    // =========================================================================
+    //  DATA PRIBADI PENGGUNA
+    // =========================================================================
     match /users/{uid} {
+
+      // ---------------- Daftar room yang saya ikuti ----------------
+      match /rooms/{roomId} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && request.resource.data.keys().hasOnly(['name', 'role', 'joinedAt'])
+          && validName(request.resource.data.name)
+          && (!('role' in request.resource.data) || request.resource.data.role in ['owner', 'member']);
+      }
 
       // ---------------- Catatan ----------------
       match /notes/{noteId} {
