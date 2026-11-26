@@ -5,6 +5,35 @@ import {
 import { liveTabs } from "./rooms.js";
 
 const COLLAPSE_LINES = 12;
+const SOUND_KEY = "catatku-room-sound";
+
+// ------------------------------------------------------------ Suara notifikasi
+let audioCtx = null;
+function unlockAudio() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch {}
+}
+/** Satu nada lembut (sine) dengan fade-out, seperti bunyi notifikasi pada umumnya. */
+function tone(freq, start, dur, vol) {
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = "sine";
+  o.frequency.setValueAtTime(freq, start);
+  g.gain.setValueAtTime(0.0001, start);
+  g.gain.exponentialRampToValueAtTime(vol, start + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+  o.connect(g).connect(audioCtx.destination);
+  o.start(start); o.stop(start + dur + 0.02);
+}
+/** Bunyi notifikasi "ding-dong" dua nada (E6 → C6). */
+function playNotif() {
+  try { navigator.vibrate?.([70, 50, 70]); } catch {}
+  if (!audioCtx || audioCtx.state !== "running") return;
+  const t = audioCtx.currentTime;
+  tone(1318.5, t, 0.35, 0.18);
+  tone(1046.5, t + 0.13, 0.5, 0.16);
+}
 
 export function mount(root, { store, go, id: roomId, fb }) {
   const me = store.getUid();
@@ -27,6 +56,7 @@ export function mount(root, { store, go, id: roomId, fb }) {
         <h1 id="r-name">Memuat…</h1>
         <button class="link small" id="r-members-btn">${icon("users")} <span id="r-count">–</span></button>
       </div>
+      <button class="icon-btn" id="r-sound" aria-pressed="true"></button>
       <button class="btn btn-primary btn-sm" id="r-invite">${icon("share")} <span>Undang</span></button>
       <div class="menu-wrap">
         <button class="icon-btn" id="r-menu-btn" aria-label="Lainnya">${icon("more")}</button>
@@ -53,6 +83,29 @@ export function mount(root, { store, go, id: roomId, fb }) {
   const ta = $("#r-text", root);
   const menu = $("#r-menu", root);
   const isOwner = () => room && room.ownerId === me;
+
+  // Tombol suara (disimpan per perangkat)
+  let soundOn = (() => { try { return localStorage.getItem(SOUND_KEY) !== "off"; } catch { return true; } })();
+  const soundBtn = $("#r-sound", root);
+  const renderSoundBtn = () => {
+    setHTML(soundBtn, icon(soundOn ? "bell" : "bell-off"));
+    soundBtn.classList.toggle("on", soundOn);
+    soundBtn.setAttribute("aria-pressed", String(soundOn));
+    soundBtn.title = soundOn ? "Suara notifikasi: aktif (klik untuk matikan)" : "Suara notifikasi: mati (klik untuk aktifkan)";
+    soundBtn.setAttribute("aria-label", soundBtn.title);
+  };
+  renderSoundBtn();
+  soundBtn.onclick = () => {
+    soundOn = !soundOn;
+    try { localStorage.setItem(SOUND_KEY, soundOn ? "on" : "off"); } catch {}
+    renderSoundBtn();
+    if (soundOn) { unlockAudio(); playNotif(); toast("Suara notifikasi aktif.", "success", 1500); }
+    else toast("Suara notifikasi dimatikan.", "info", 1500);
+  };
+  // Browser hanya mengizinkan audio setelah ada interaksi pengguna di halaman
+  const onGesture = () => unlockAudio();
+  document.addEventListener("pointerdown", onGesture, { passive: true });
+  document.addEventListener("keydown", onGesture);
 
   // ------------------------------------------------------------ Listener
   function lostAccess(msg) {
@@ -110,6 +163,7 @@ export function mount(root, { store, go, id: roomId, fb }) {
     const fresh = new Set();
     items.forEach((it) => { if (!seen.has(it.id)) { if (!firstItems && it.uid !== me) fresh.add(it.id); seen.add(it.id); } });
     firstItems = false;
+    if (fresh.size && soundOn) playNotif(); // satu bunyi walau beberapa pesan datang bersamaan
     setHTML(feed, html`${items.map((it) => {
       const mine = it.uid === me;
       const long = it.text.split("\n").length > COLLAPSE_LINES || it.text.length > 900;
@@ -312,6 +366,8 @@ export function mount(root, { store, go, id: roomId, fb }) {
     unsubs.forEach((u) => u());
     clearInterval(timer);
     document.removeEventListener("click", closeMenu);
+    document.removeEventListener("pointerdown", onGesture);
+    document.removeEventListener("keydown", onGesture);
     document.title = "Catatku";
   };
 }
